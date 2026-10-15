@@ -844,6 +844,10 @@ def driver_dashboard():
             if edit_trip_id:
                 trip_to_edit = next((t for t in trips if t.get("tripid") == edit_trip_id), None)
                 if trip_to_edit:
+                    # Include edit_trip_id in every widget key so Streamlit
+                    # creates fresh widgets (with correct DB values) whenever
+                    # the selected trip changes.
+                    ek = edit_trip_id  # shorthand
                     edit_col1, edit_col2 = st.columns(2)
                     with edit_col1:
                         existing_date = trip_to_edit.get("tripdate")
@@ -855,7 +859,7 @@ def driver_dashboard():
                         else:
                             existing_date = date.today()
 
-                        edit_date = st.date_input("Trip Date", value=existing_date, key="edit_date")
+                        edit_date = st.date_input("Trip Date", value=existing_date, key=f"edit_date_{ek}")
 
                         pass_map = {f"{p['user_id']} — {p.get('full_names', '')}": p["user_id"] for p in all_passengers}
                         pass_labels = list(pass_map.keys())
@@ -863,33 +867,37 @@ def driver_dashboard():
                             (k for k, v in pass_map.items() if v == trip_to_edit.get("passid")),
                             pass_labels[0] if pass_labels else "",
                         )
-                        edit_passenger = st.selectbox("Passenger", pass_labels, index=pass_labels.index(current_pass_label) if current_pass_label in pass_labels else 0, key="edit_passenger")
+                        edit_passenger = st.selectbox(
+                            "Passenger", pass_labels,
+                            index=pass_labels.index(current_pass_label) if current_pass_label in pass_labels else 0,
+                            key=f"edit_passenger_{ek}",
+                        )
                         edit_passid = pass_map.get(edit_passenger, "")
 
                         edit_status = st.selectbox(
                             "Status",
                             ["Unpaid", "Paid"],
                             index=0 if trip_to_edit.get("tripstatus") != "Paid" else 1,
-                            key="edit_status",
+                            key=f"edit_status_{ek}",
                         )
 
                     with edit_col2:
-                        edit_fromloc = st.text_input("From Location", value=trip_to_edit.get("fromloc") or "", key="edit_fromloc")
-                        edit_toloc = st.text_input("To Location", value=trip_to_edit.get("toloc") or "", key="edit_toloc")
+                        edit_fromloc = st.text_input("From Location", value=trip_to_edit.get("fromloc") or "", key=f"edit_fromloc_{ek}")
+                        edit_toloc = st.text_input("To Location", value=trip_to_edit.get("toloc") or "", key=f"edit_toloc_{ek}")
 
                         edit_amount = st.number_input(
                             "Trip Amount (R)",
                             value=float(trip_to_edit.get("tripamount") or 0),
                             min_value=0.0,
                             step=0.5,
-                            key="edit_amount",
+                            key=f"edit_amount_{ek}",
                         )
 
-                        edit_comments = st.text_input("Comments", value=trip_to_edit.get("Comments") or "", key="edit_comments")
+                        edit_comments = st.text_input("Comments", value=trip_to_edit.get("Comments") or "", key=f"edit_comments_{ek}")
 
                     btn_col1, btn_col2, btn_col3 = st.columns(3)
                     with btn_col1:
-                        if st.button("Save Changes", type="primary", key="save_edit"):
+                        if st.button("Save Changes", type="primary", key=f"save_edit_{ek}"):
                             updates = {
                                 "tripdate": str(edit_date),
                                 "passid": edit_passid,
@@ -908,7 +916,7 @@ def driver_dashboard():
                                 st.error(f"Failed to update trip: {e}")
 
                     with btn_col2:
-                        if st.button("Mark as Paid", key="mark_paid"):
+                        if st.button("Mark as Paid", key=f"mark_paid_{ek}"):
                             try:
                                 db.update_trip(edit_trip_id, {"tripstatus": "Paid"})
                                 st.success("Trip marked as Paid.")
@@ -918,7 +926,7 @@ def driver_dashboard():
                                 st.error(f"Failed to update trip: {e}")
 
                     with btn_col3:
-                        if st.button("Delete Trip", key="delete_trip"):
+                        if st.button("Delete Trip", key=f"delete_trip_{ek}"):
                             try:
                                 db.delete_trip(edit_trip_id)
                                 st.success("Trip deleted.")
