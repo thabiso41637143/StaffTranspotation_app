@@ -1004,13 +1004,22 @@ def driver_dashboard():
                 db.add_user(new_user)
                 # Save the trip rate to TripPrice table
                 db.upsert_trip_price(staff_id_val, new_group_id, new_trip_rate)
-                # Create an account with balance 0 for the new passenger
-                db.create_account(staff_id_val)
-                st.success(f"Staff member '{staff_id_val}' added with trip rate R{new_trip_rate:.2f}. Account created.")
-                clear_data_cache()
-                st.rerun()
             except Exception as e:
                 st.error(f"Failed to add staff member: {e}")
+            else:
+                # Create an account — non-fatal if it fails (account can be
+                # created later; the user row is what matters)
+                account_note = ""
+                try:
+                    db.create_account(staff_id_val)
+                except Exception:
+                    account_note = " (account creation skipped — already exists or column mismatch)"
+                st.success(
+                    f"Staff member '{staff_id_val}' added with trip rate "
+                    f"R{new_trip_rate:.2f}.{account_note}"
+                )
+                clear_data_cache()
+                st.rerun()
 
     # --- Tab 4: Capture a new trip -----------------------------------------
     with tab_add_trip:

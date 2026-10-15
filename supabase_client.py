@@ -548,11 +548,18 @@ def get_account_for_user(user_id: str):
 
 def create_account(user_id: str):
     """Create a new account with balance 0 for a user."""
-    resp = requests.post(
-        f"{REST_URL}/account",
-        headers=_headers(),
-        json={"user_id": user_id, "balance": 0, "comments": None},
-    )
+    # Try with comments field first; fall back without it if the column doesn't exist.
+    for payload in [
+        {"user_id": user_id, "balance": 0, "comments": None},
+        {"user_id": user_id, "balance": 0},
+    ]:
+        resp = requests.post(
+            f"{REST_URL}/account",
+            headers=_headers(),
+            json=payload,
+        )
+        if resp.status_code != 400:
+            break
     resp.raise_for_status()
     return resp.json()
 
