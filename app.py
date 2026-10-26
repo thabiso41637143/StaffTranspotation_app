@@ -454,9 +454,12 @@ def passenger_view():
         with summary_col1:
             st.metric("Total Trips", len(trips))
         with summary_col2:
-            # Count distinct trip dates as "days travelled"
-            distinct_dates = set(t.get("tripdate") for t in trips if t.get("tripdate"))
-            st.metric("Days Travelled", len(distinct_dates))
+            # Count unpaid / partially paid trips
+            unpaid_count = sum(
+                1 for t in trips
+                if (t.get("tripstatus") or "Unpaid").lower() in ("unpaid", "partially paid")
+            )
+            st.metric("Days Travelled", unpaid_count)
         with summary_col3:
             st.metric("Total Amount", f"R{total_amount:.2f}")
         with summary_col4:
