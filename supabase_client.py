@@ -948,6 +948,16 @@ def get_all_driver_weekly_availability():
     return resp.json()
 
 
+def delete_driver_weekly_availability_for_driver(driverid: str):
+    """Delete ALL DriverWeeklyAvailability rows for a driver (full schedule reset)."""
+    resp = requests.delete(
+        f"{REST_URL}/DriverWeeklyAvailability",
+        headers=_headers(),
+        params={"driverid": f"eq.{driverid}"},
+    )
+    resp.raise_for_status()
+
+
 def upsert_driver_weekly_availability(
     driverid: str,
     day_of_week: int,
@@ -956,14 +966,16 @@ def upsert_driver_weekly_availability(
     time_to: str = None,
     comments: str = None,
     group_id: int = None,
+    week_start: str = None,
 ):
     """Insert or update a driver's weekly availability for a specific day.
 
     group_id=None means the record applies to ALL of the driver's groups.
+    week_start (ISO date string, e.g. '2026-10-26') scopes the record to a
+    specific calendar week so old weeks don't bleed into new ones.
     When available=True the time_from/time_to/comments fields are cleared.
 
-    Falls back to availability-only payload if the extra columns haven't been
-    added yet (migrate_availability.sql not yet run).
+    Falls back to a simpler payload if optional columns don't exist yet.
     """
     # Build the full payload
     full_payload = {
@@ -973,6 +985,9 @@ def upsert_driver_weekly_availability(
         "comments":  comments  if not available else None,
         "group_id":  group_id,
     }
+    if week_start is not None:
+        full_payload["week_start"] = week_start
+
     # Minimal payload used as fallback when extra columns don't exist yet
     minimal_payload = {"available": available}
 
@@ -1023,9 +1038,8 @@ def upsert_driver_weekly_availability(
 
     resp = _do_write(full_payload)
     if resp.status_code == 400:
-        # Extra columns (time_from/time_to/comments/group_id) likely don't exist
-        # yet — retry with a simple availability-only write, falling back to a
-        # plain (driverid, day_of_week) match so the old unique constraint still works.
+        # Extra columns (time_from/time_to/comments/group_id/week_start) likely
+        # don't exist yet — retry with a simple availability-only write.
         simple_params = {"driverid": f"eq.{driverid}", "day_of_week": f"eq.{day_of_week}"}
         if existing:
             resp = requests.patch(

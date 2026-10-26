@@ -263,21 +263,32 @@ def get_driver_unavailable_dates(driverid):
     return sorted([a["unavailable_date"] for a in avail if a.get("driverid") == driverid])
 
 def get_driver_weekly_availability(driverid, group_id=None):
-    """Return a dict {day_of_week: row_dict} for a driver filtered by group.
+    """Return a dict {day_of_week: row_dict} for a driver filtered by group
+    and scoped to the **current calendar week**.
 
     group_id=None  → return rows where group_id IS NULL (applies to all groups).
     group_id=<int> → return rows for that specific group.
 
+    Rows that carry a `week_start` field are only returned if they belong to
+    the current week (Monday of this week).  Rows without a `week_start` field
+    (legacy rows saved before week-scoping was added) are included as-is so
+    that existing data keeps working until the driver next saves.
+
     Each row contains at minimum {'available': bool} plus optional
     'time_from', 'time_to', 'comments'.  Days not in the DB default to
-    {'available': True, 'time_from': None, 'time_to': None, 'comments': None}.
+    {'available': True}.
     """
+    current_week_start = str(get_week_start())
     avail = _load_driver_weekly_availability()
     result = {}
     for a in avail:
         if a.get("driverid") != driverid:
             continue
-        row_gid = a.get("group_id")  # may be None or an int
+        # Week-scope check: skip rows from a different week
+        row_week = a.get("week_start")
+        if row_week is not None and str(row_week) != current_week_start:
+            continue
+        row_gid = a.get("group_id")
         if group_id is None and row_gid is None:
             result[a["day_of_week"]] = a
         elif group_id is not None and row_gid == group_id:
@@ -455,54 +466,153 @@ def passenger_view():
 
         st.write("")
 
-        # --- Trip history table ---
-        st.markdown("### Trip History")
+        # --- Trip history — tabbed view (Unpaid | Trip History | Payment History) ---
+        st.markdown("### Trips")
 
-        if not trips:
-            st.info("No trips recorded yet.")
-        else:
-            # Build a display-friendly table
-            display_rows = []
-            for t in trips:
-                trip_date = t.get("tripdate", "")
-                if trip_date:
-                    try:
-                        trip_date = datetime.strptime(str(trip_date), "%Y-%m-%d").strftime("%d %b %Y")
-                    except (ValueError, TypeError):
-                        pass
+        tab_unpaid, tab_history, tab_payments_hist = st.tabs([
+            "⚠️ Unpaid Trips",
+            "🗂️ Trip History",
+            "💳 Payment History",
+        ])
 
-                trip_status = t.get("tripstatus", "—") or "—"
+        # Helper: build display row from a trip dict
+        def _trip_row(t):
+            trip_date = t.get("tripdate", "")
+            if trip_date:
+                try:
+                    trip_date = datetime.strptime(str(trip_date), "%Y-%m-%d").strftime("%d %b %Y")
+                except (ValueError, TypeError):
+                    pass
+            return {
+                "Date": trip_date,
+                "From": t.get("fromloc") or "—",
+                "To": t.get("toloc") or "—",
+                "Amount": f"R{float(t.get('tripamount') or 0):.2f}",
+                "Status": t.get("tripstatus") or "Unpaid",
+                "Comments": t.get("Comments") or "",
+            }
 
-                display_rows.append({
-                    "Date": trip_date,
-                    "From": t.get("fromloc") or "—",
-                    "To": t.get("toloc") or "—",
-                    "Amount": f"R{float(t.get('tripamount') or 0):.2f}",
-                    "Status": trip_status,
-                    "Comments": t.get("Comments") or "",
-                })
+        # --- Tab 1: Unpaid trips (landing) ---
+        with tab_unpaid:
+            unpaid_trips = [
+                t for t in trips
+                if (t.get("tripstatus") or "Unpaid").lower() in ("unpaid", "partially paid")
+            ]
+            if not unpaid_trips:
+                st.success("🎉 All trips are paid up — nothing outstanding.")
+            else:
+                # Filter controls
+                filter_col1, filter_col2 = st.columns(2)
+                with filter_col1:
+                    upaid_search = st.text_input(
+                        "Search by date or route",
+                        placeholder="e.g. Oct 2026 or Fruit Basket",
+                        key="pass_unpaid_search",
+                    )
+                with filter_col2:
+                    upaid_status = st.selectbox(
+                        "Filter by status",
+                        ["All", "Unpaid", "Partially Paid"],
+                        key="pass_unpaid_status",
+                    )
 
-            render_table(display_rows)
+                filtered_unpaid = unpaid_trips
+                if upaid_status != "All":
+                    status_map = {"Unpaid": "unpaid", "Partially Paid": "partially paid"}
+                    filtered_unpaid = [
+                        t for t in filtered_unpaid
+                        if (t.get("tripstatus") or "").lower() == status_map[upaid_status]
+                    ]
+                if upaid_search.strip():
+                    kw = upaid_search.strip().lower()
+                    filtered_unpaid = [
+                        t for t in filtered_unpaid
+                        if kw in str(t.get("tripdate") or "").lower()
+                        or kw in (t.get("fromloc") or "").lower()
+                        or kw in (t.get("toloc") or "").lower()
+                    ]
 
-        # --- Payment history ---
-        payments = get_payments_for_pass(staff_id)
-        if payments:
-            st.write("")
-            st.markdown("### Payment History")
-            pay_rows = []
-            for p in payments:
-                pay_date = p.get("paydate", "")
-                if pay_date:
-                    try:
-                        pay_date = datetime.strptime(str(pay_date), "%Y-%m-%d").strftime("%d %b %Y")
-                    except (ValueError, TypeError):
-                        pass
-                pay_rows.append({
-                    "Date": pay_date,
-                    "Amount Paid": f"R{float(p.get('amountpayed') or 0):.2f}",
-                    "Comments": p.get("Comments") or "",
-                })
-            render_table(pay_rows)
+                unpaid_total = sum(float(t.get("tripamount") or 0) for t in filtered_unpaid)
+                st.caption(f"{len(filtered_unpaid)} trip(s) shown · Outstanding: **R{unpaid_total:.2f}**")
+                render_table([_trip_row(t) for t in filtered_unpaid])
+
+        # --- Tab 2: Full trip history with filters ---
+        with tab_history:
+            if not trips:
+                st.info("No trips recorded yet.")
+            else:
+                # Filter controls
+                hist_col1, hist_col2, hist_col3 = st.columns(3)
+                with hist_col1:
+                    hist_search = st.text_input(
+                        "Search by date or route",
+                        placeholder="e.g. Oct 2026 or Fruit Basket",
+                        key="pass_hist_search",
+                    )
+                with hist_col2:
+                    hist_status = st.selectbox(
+                        "Filter by status",
+                        ["All", "Unpaid", "Partially Paid", "Paid"],
+                        key="pass_hist_status",
+                    )
+                with hist_col3:
+                    hist_sort = st.selectbox(
+                        "Sort by date",
+                        ["Newest first", "Oldest first"],
+                        key="pass_hist_sort",
+                    )
+
+                filtered_hist = list(trips)
+                if hist_status != "All":
+                    status_map2 = {
+                        "Unpaid": "unpaid",
+                        "Partially Paid": "partially paid",
+                        "Paid": "paid",
+                    }
+                    filtered_hist = [
+                        t for t in filtered_hist
+                        if (t.get("tripstatus") or "").lower() == status_map2[hist_status]
+                    ]
+                if hist_search.strip():
+                    kw = hist_search.strip().lower()
+                    filtered_hist = [
+                        t for t in filtered_hist
+                        if kw in str(t.get("tripdate") or "").lower()
+                        or kw in (t.get("fromloc") or "").lower()
+                        or kw in (t.get("toloc") or "").lower()
+                    ]
+                if hist_sort == "Oldest first":
+                    filtered_hist = sorted(
+                        filtered_hist,
+                        key=lambda t: str(t.get("tripdate") or ""),
+                    )
+                # else already ordered newest-first from the cache
+
+                hist_total = sum(float(t.get("tripamount") or 0) for t in filtered_hist)
+                st.caption(f"{len(filtered_hist)} trip(s) shown · Total: **R{hist_total:.2f}**")
+                render_table([_trip_row(t) for t in filtered_hist])
+
+        # --- Tab 3: Payment history ---
+        with tab_payments_hist:
+            payments = get_payments_for_pass(staff_id)
+            if not payments:
+                st.info("No payments recorded yet.")
+            else:
+                pay_rows = []
+                for p in payments:
+                    pay_date = p.get("paydate", "")
+                    if pay_date:
+                        try:
+                            pay_date = datetime.strptime(str(pay_date), "%Y-%m-%d").strftime("%d %b %Y")
+                        except (ValueError, TypeError):
+                            pass
+                    pay_rows.append({
+                        "Date": pay_date,
+                        "Amount Paid": f"R{float(p.get('amountpayed') or 0):.2f}",
+                        "Comments": p.get("Comments") or "",
+                    })
+                st.caption(f"{len(pay_rows)} payment(s) recorded")
+                render_table(pay_rows)
 
         # --- Driver availability ---
         st.write("")
@@ -528,6 +638,7 @@ def passenger_view():
 
                     avail_days = []
                     unavail_rows = []   # list of (day_name, row_dict)
+                    has_schedule = bool(merged_avail)  # False if driver hasn't saved this week
                     for dow in range(7):
                         # Skip days that have already passed this week
                         if dow < today_dow:
@@ -539,7 +650,9 @@ def passenger_view():
                         else:
                             unavail_rows.append((DAYS_OF_WEEK[dow], row if isinstance(row, dict) else {}))
 
-                    if not unavail_rows:
+                    if not has_schedule:
+                        st.info(f"**{driver_name}** has not posted a schedule for this week yet.")
+                    elif not unavail_rows:
                         st.success(f"**{driver_name}** is available every day of the week.")
                     else:
                         # Summary warning line
@@ -1393,14 +1506,16 @@ def driver_dashboard():
         today_dow = date.today().weekday()  # 0=Mon … 6=Sun
 
         # Build a lookup of ALL this driver's saved availability rows keyed by
-        # (day_of_week, group_id) — only keep rows for today or future days.
+        # (day_of_week, group_id) — only keep rows for the CURRENT week.
         all_drv_avail = _load_driver_weekly_availability()
+        current_week_start_str = str(ps_week_start)
         avail_by_day_group = {}
         for a in all_drv_avail:
             if a.get("driverid") == driver_id:
                 dow_val = a["day_of_week"]
-                # Skip rows for days that have already passed this week
-                if dow_val < today_dow:
+                # Skip rows belonging to a different week
+                row_week = a.get("week_start")
+                if row_week is not None and str(row_week) != current_week_start_str:
                     continue
                 avail_by_day_group[(dow_val, a.get("group_id"))] = a
 
@@ -1518,40 +1633,34 @@ def driver_dashboard():
 
         if st.button("Update My Availability", type="primary", key="update_drv_avail_btn"):
             errors = []
+            # Collect the days to save (today and future only)
+            days_to_save = []
             for dow in range(7):
                 if dow < today_dow:
                     continue  # never write past days
                 avail = new_avail_checked[dow]
                 details = new_avail_details.get(dow, {})
-                day_gid = details.get("group_id")
+                days_to_save.append((dow, avail, details))
 
-                old_row = avail_by_day_group.get((dow, day_gid), {})
-                old_avail = old_row.get("available", True) if isinstance(old_row, dict) else True
-                old_tf = (old_row.get("time_from") or "")[:5] if isinstance(old_row, dict) else ""
-                old_tt = (old_row.get("time_to")   or "")[:5] if isinstance(old_row, dict) else ""
-                old_cm =  old_row.get("comments",  "")        if isinstance(old_row, dict) else ""
+            try:
+                # Delete ALL existing availability rows for this driver so the
+                # new schedule fully replaces the old one (including any rows
+                # from previous weeks).
+                db.delete_driver_weekly_availability_for_driver(driver_id)
 
-                new_tf = details.get("time_from") or ""
-                new_tt = details.get("time_to")   or ""
-                new_cm = details.get("comments")  or ""
-
-                changed = (
-                    avail != old_avail
-                    or new_tf != old_tf
-                    or new_tt != old_tt
-                    or new_cm != old_cm
-                )
-                if changed:
-                    try:
-                        db.upsert_driver_weekly_availability(
-                            driver_id, dow, avail,
-                            time_from=details.get("time_from"),
-                            time_to=details.get("time_to"),
-                            comments=details.get("comments"),
-                            group_id=day_gid,
-                        )
-                    except Exception as e:
-                        errors.append(f"{DAYS_OF_WEEK[dow]}: {e}")
+                # Re-insert only today + future days with the current values.
+                for dow, avail, details in days_to_save:
+                    day_gid = details.get("group_id")
+                    db.upsert_driver_weekly_availability(
+                        driver_id, dow, avail,
+                        time_from=details.get("time_from"),
+                        time_to=details.get("time_to"),
+                        comments=details.get("comments"),
+                        group_id=day_gid,
+                        week_start=current_week_start_str,
+                    )
+            except Exception as e:
+                errors.append(str(e))
 
             if errors:
                 for err in errors:
