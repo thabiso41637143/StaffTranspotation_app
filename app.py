@@ -414,6 +414,78 @@ def passenger_view():
         st.session_state.passenger_lookup_id = staff_id
         st.rerun()
 
+    # --- Passenger list (radio) — hidden once a lookup is active ---
+    if not st.session_state.passenger_lookup_id:
+        st.write("")
+        st.markdown("---")
+        st.markdown("### 👥 Passengers")
+
+        all_passengers = [
+            p for p in get_passengers()
+            if p.get("type") != "Driver"
+            and (get_group_by_id(p.get("group_id")) or {}).get("groupname", "").upper() != "ABSALUMINUM"
+        ]
+        all_passengers_sorted = sorted(all_passengers, key=lambda p: (p.get("full_names") or "").lower())
+
+        if not all_passengers_sorted:
+            st.info("No passengers found.")
+        else:
+            passenger_names = [p.get("full_names") or p.get("user_id", "Unknown") for p in all_passengers_sorted]
+            selected_name = st.radio(
+                "Select a passenger to view their trips:",
+                options=passenger_names,
+                index=None,
+                key="passenger_radio_select",
+                horizontal=False,
+            )
+
+            if selected_name:
+                selected_passenger = next(
+                    (p for p in all_passengers_sorted
+                     if (p.get("full_names") or p.get("user_id", "")) == selected_name),
+                    None,
+                )
+                if selected_passenger:
+                    pid = selected_passenger.get("user_id", "")
+                    p_trips = get_trips_for_pass(pid)
+
+                    # Only unpaid / partially paid trips
+                    unpaid_trips = [
+                        t for t in p_trips
+                        if (t.get("tripstatus") or "Unpaid").lower() in ("unpaid", "partially paid")
+                    ]
+
+                    # Summary
+                    total_trips = len(unpaid_trips)
+                    total_amount = sum(float(t.get("tripamount") or 0) for t in unpaid_trips)
+
+                    s_col1, s_col2 = st.columns(2)
+                    with s_col1:
+                        st.metric("Total Trips", total_trips)
+                    with s_col2:
+                        st.metric("Total Amount", f"R{total_amount:.2f}")
+
+                    # Trip table
+                    if not unpaid_trips:
+                        st.success("🎉 All trips are paid up — nothing outstanding.")
+                    else:
+                        trip_rows = []
+                        for t in unpaid_trips:
+                            trip_date = t.get("tripdate", "")
+                            if trip_date:
+                                try:
+                                    trip_date = datetime.strptime(str(trip_date), "%Y-%m-%d").strftime("%d %b %Y")
+                                except (ValueError, TypeError):
+                                    pass
+                            trip_rows.append({
+                                "Date": trip_date,
+                                "Amount": f"R{float(t.get('tripamount') or 0):.2f}",
+                                "Status": t.get("tripstatus") or "Unpaid",
+                            })
+                        render_table(trip_rows)
+
+    # end: passenger list (only shown when no lookup is active)
+
     # --- Render passenger details from persisted lookup state ---
     active_id = st.session_state.passenger_lookup_id
     if active_id:
@@ -450,21 +522,17 @@ def passenger_view():
         account = get_account_for_user_cached(staff_id)
         account_balance = float(account.get("balance", 0)) if account else (total_paid - total_amount)
 
-        summary_col1, summary_col2, summary_col3, summary_col4, summary_col5 = st.columns(5)
+        summary_col1, summary_col2, summary_col3 = st.columns(3)
         with summary_col1:
-            st.metric("Total Trips", len(trips))
-        with summary_col2:
             # Count unpaid / partially paid trips
             unpaid_count = sum(
                 1 for t in trips
                 if (t.get("tripstatus") or "Unpaid").lower() in ("unpaid", "partially paid")
             )
             st.metric("Days Travelled", unpaid_count)
-        with summary_col3:
-            st.metric("Total Amount", f"R{total_amount:.2f}")
-        with summary_col4:
+        with summary_col2:
             st.metric("Amount Owed", f"R{amount_owed:.2f}")
-        with summary_col5:
+        with summary_col3:
             st.metric("Account Balance", f"R{account_balance:.2f}")
 
         st.write("")
